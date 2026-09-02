@@ -1,0 +1,161 @@
+# hbr-rmf-core: adds the remaining 13 rmf.repos packages (rmf_traffic,
+# rmf_ros2/rmf_fleet_adapter/rmf_websocket, rmf_simulation, rmf_task,
+# rmf_traffic_editor, rmf_utils, rmf_visualization, rmf_battery, vendor
+# packages) on top of hbr-rmf-msgs. Builder-tier only — never deployed.
+# Only images/rmf-demos needs this layer (rmf-web-zenoh stops at
+# hbr-rmf-msgs — see README.md).
+#
+# Build: build/build.sh base/rmf-core
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-rmf-msgs:${BASE_TAG}
+
+# tinyxml-devel: menge_vendor needs the original TinyXML (not TinyXml2) via
+# pkg-config. Fedora 43 ships it natively (unlike CentOS Stream 9, which
+# needed EPEL for this).
+RUN dnf -y install boost-devel tinyxml-devel asio-devel && dnf clean all
+
+# websocketpp (rmf_visualization_schedule): CMake looks for it via
+# find_package in CONFIG mode — a header-only devel package wouldn't
+# satisfy that. conda-forge packages it with proper CMake integration.
+#
+# The rest of this list was found the hard way, one `find_package` failure
+# at a time, by actually building this layer standalone against a minimal
+# `ros-base` env — a gap-analysis the old repo's Containerfiles never did,
+# since they always built these same packages alongside `ros-jazzy-desktop-full`
+# (installed upfront there), which happens to pull all of these in
+# transitively as dependencies of Gazebo/Nav2/etc:
+#   - libccd, ceres-solver, opencv: rmf_traffic's vendored FCL requires CCD
+#     with no bundled fallback; rmf_traffic_editor needs Ceres (crowd-sim
+#     optimization) and OpenCV directly via find_package.
+#   - ros-jazzy-vision-msgs: rmf_visualization_obstacles depends on it directly.
+#   - ros-jazzy-backward-ros: rmf_websocket (rmf_ros2) depends on it for
+#     pretty stack traces on crash.
+#   - ros-jazzy-gz-sim-vendor: rmf_building_sim_gz_plugins needs gz-sim's
+#     dev headers/libs to compile its plugin against — genuinely a
+#     Gazebo-touching package living inside the `rmf_simulation` repo, but
+#     it only needs gz-sim's SDK, not the full desktop-full/Nav2/RViz
+#     runtime stack `images/rmf-demos` installs — so it's cheap to satisfy
+#     right here rather than deferring this one package to that layer.
+# libccd is deliberately NOT listed explicitly here even though rmf_traffic
+# needs it: an unpinned `libccd` request resolves to the latest (2.1),
+# which conflicts with ros-jazzy-gz-sim-vendor's own transitive chain
+# (gz-physics-vendor -> gz-dartsim-vendor -> libccd-double, which requires
+# `libccd <1`) — confirmed directly via a real solver failure ("libccd =*
+# is requested and can be installed" vs "libccd-double ... requires libccd
+# <1, which conflicts with any installable versions previously reported").
+# Letting gz-sim-vendor's own chain pull in its required libccd version
+# satisfies both it and FCL's find_package(CCD) in one consistent solve,
+# rather than requesting a second, conflicting constraint ourselves.
+RUN micromamba install -y -n ros_env -c robostack-jazzy -c conda-forge \
+      websocketpp \
+      ceres-solver \
+      opencv \
+      ros-jazzy-vision-msgs \
+      ros-jazzy-backward-ros \
+      ros-jazzy-gz-sim-vendor \
+    && micromamba clean -a -y
+
+# rclcpp optionally links LTTng-UST tracing hooks. The conda env already
+# ships a compatible lttng-ust as an rclcpp dependency; the actual gap is
+# just the unversioned dev symlinks conda's package omits.
+RUN ln -sf liblttng-ust.so.1.0.0 ${MAMBA_ROOT_PREFIX}/envs/ros_env/lib/liblttng-ust.so && \
+    ln -sf liblttng-ust-common.so.1 ${MAMBA_ROOT_PREFIX}/envs/ros_env/lib/liblttng-ust-common.so
+
+# rmf-core.repos was already generated (from the same pins.py) by
+# hbr-rmf-msgs's build and left in /tmp — reuse it directly rather than
+# re-fetching rmf.repos and re-running generate-repos.py here.
+RUN cd ${RMF_WS}/src && bash -c "source ${ROS_ENV_SETUP} && vcs import . < /tmp/rmf-core.repos"
+
+# rmf_traffic_editor_test_maps needs fiona for build-time map/navgraph
+# codegen. DELIBERATELY NOT INSTALLED — fiona genuinely conflicts with
+# numpy/GDAL versions already pinned by the rest of ros_env (confirmed via
+# `--freeze-installed` on the bootc lineage this repo replaces). This is
+# the same fiona gap tracked as the hotel/airport fast-follow in README.md
+# — office demo doesn't use this package at all. COLCON_IGNORE (not
+# --packages-skip) removes it from colcon's package discovery entirely —
+# a *skipped* package is still "known" to colcon, which then fails looking
+# for its install-time environment hooks from a dependent package.
+RUN touch ${RMF_WS}/src/rmf/rmf_traffic_editor/rmf_traffic_editor_test_maps/COLCON_IGNORE
+
+# rmf_visualization_rviz2_plugins needs rviz_common — confirmed a genuine
+# `ros-jazzy-desktop-full`-scale dependency, not a small standalone vendor
+# package like gz-sim-vendor: a dry-run install pulls 148 packages / 263MB
+# (the full X11/OpenGL/Ogre stack RViz itself needs), which would blur the
+# "hbr-rmf-core has no GUI/rendering deps" boundary and duplicate what
+# images/rmf-demos's runtime stage already installs separately. Deferred
+# to images/rmf-demos instead, which installs `ros-jazzy-desktop-full`
+# (including rviz_common) — same COLCON_IGNORE-then-remove pattern as
+# gz-sim-vendor would have needed had it not been a lightweight standalone
+# package. (rmf_visualization's own package.xml exec_depends on this —
+# colcon just skips that metapackage harmlessly once the plugin itself is
+# excluded from its package discovery, rather than failing on it.)
+RUN touch ${RMF_WS}/src/rmf/rmf_visualization/rmf_visualization_rviz2_plugins/COLCON_IGNORE
+
+# rmf.repos's vendor packages (pybind11_json_vendor, menge_vendor,
+# nlohmann_json_schema_validator_vendor) need ament_cmake_vendor_package,
+# which RoboStack's recipe doesn't package even though it packages the rest
+# of ament_cmake. It lives in the ament/ament_cmake monorepo — only pull
+# that one subdirectory, since the rest of ament_cmake is already provided
+# by conda and would otherwise create duplicate-package conflicts.
+ARG AMENT_CMAKE_COMMIT
+RUN cd ${RMF_WS}/src && \
+    git clone https://github.com/ament/ament_cmake.git /tmp/ament_cmake_src && \
+    cd /tmp/ament_cmake_src && git checkout ${AMENT_CMAKE_COMMIT} && cd - && \
+    mv /tmp/ament_cmake_src/ament_cmake_vendor_package ${RMF_WS}/src/ && \
+    rm -rf /tmp/ament_cmake_src
+
+# Genuine upstream bug in rmf_robot_sim_common: calls std::max/std::min with
+# mismatched int/double arguments (bare unqualified abs() resolves to C's
+# integer-only version), which GCC rejects under strict template argument
+# deduction. No existing std::abs in this file, so a blanket qualify is safe.
+RUN sed -i 's/\babs(/std::abs(/g' \
+    ${RMF_WS}/src/rmf/rmf_simulation/rmf_robot_sim_common/src/utils.cpp
+
+# Fedora's Boost (unlike CentOS Stream 9's much older system Boost) has
+# purged Boost.Asio's entire pre-2018 API surface, which websocketpp's
+# bundled Boost.Asio transport code is written against wholesale.
+# Standalone Asio (-DASIO_STANDALONE below, dnf-installed asio-devel) has
+# kept that old API surface intact. rmf_websocket hardcodes boost::asio
+# types directly in its own source rather than going through websocketpp's
+# `websocketpp::lib::asio` abstraction — patched here to match. This file
+# list is exhaustive (every real, non-vendored .cpp/.hpp in the package was
+# checked against the exact pinned commit for boost::asio references).
+RUN sed -i 's/boost::asio/asio/g' \
+    ${RMF_WS}/src/rmf/rmf_ros2/rmf_websocket/src/rmf_websocket/BroadcastClient.cpp \
+    ${RMF_WS}/src/rmf/rmf_ros2/rmf_websocket/src/rmf_websocket/BroadcastServer.cpp \
+    ${RMF_WS}/src/rmf/rmf_ros2/rmf_websocket/src/rmf_websocket/client/ClientWebSocketEndpoint.hpp \
+    ${RMF_WS}/src/rmf/rmf_ros2/rmf_websocket/src/rmf_websocket/client/ClientWebSocketEndpoint.cpp && \
+    sed -i '/^using namespace boost;$/d' \
+    ${RMF_WS}/src/rmf/rmf_ros2/rmf_websocket/src/rmf_websocket/client/ClientWebSocketEndpoint.cpp
+
+# GCC's system compiler is stricter than whatever built the upstream Ubuntu
+# binaries about requiring `#include <cassert>` before using assert() —
+# hits rmf_traffic's vendored FCL (collision library) in multiple files, a
+# latent portability issue in that vendored code, not ours. Force-include
+# <cassert> into every translation unit via -include rather than
+# whack-a-mole patching each file.
+#
+# CC/CXX: don't use the system dnf-installed gcc/g++ — ABI mismatch against
+# conda-forge-built libraries. `micromamba run -n ros_env` activates the
+# conda-forge `compilers` package's own matched toolchain instead.
+#
+# CPATH/LIBRARY_PATH/PKG_CONFIG_PATH: conda-forge's `compilers` package
+# ships its own isolated sysroot and doesn't search /usr/include or
+# /usr/lib64 by default — bridge them globally since multiple downstream
+# packages hit this same wall (rmf_traffic_ros2's unforwarded Eigen3
+# include, tinyxml.pc's stripped Cflags via pkg-config, etc).
+#
+# --continue-on-error: a safety net so one unexpected failure doesn't
+# cancel/hide the rest of a parallel build.
+RUN micromamba run -n ros_env bash -c "source ${ROS_ENV_SETUP} && \
+    export CPATH=\"${MAMBA_ROOT_PREFIX}/envs/ros_env/include/eigen3:/usr/include:\${CPATH}\" && \
+    export LIBRARY_PATH=\"/usr/lib64:\${LIBRARY_PATH}\" && \
+    export PKG_CONFIG_PATH=\"/usr/lib64/pkgconfig:\${PKG_CONFIG_PATH}\" && \
+    export CXXFLAGS=\"-include cassert -fpermissive -DASIO_STANDALONE \${CXXFLAGS}\" && \
+    colcon build --continue-on-error --event-handlers console_direct+"
+
+# Smoke test: core libs + rmw_zenoh_cpp still resolve.
+RUN bash -c "source ${ROS_ENV_SETUP} && source install/setup.bash && \
+    ros2 pkg list | grep -E '^(rmf_traffic|rmf_fleet_adapter|rmw_zenoh_cpp)$'"

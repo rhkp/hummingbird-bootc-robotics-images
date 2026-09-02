@@ -1,0 +1,29 @@
+# Secrets and local/per-deployer environment (never commit)
+.env
+.env.*
+!.env.example
+*.local
+versions.env
+!versions.env.example
+images/bootc-vm-host/aws.env
+!images/bootc-vm-host/aws.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+.dockerconfigjson
+.auth.json
+secrets/
+
+# Editor / OS
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+.claude/
+
+# Python
+**/__pycache__/
+*.pyc

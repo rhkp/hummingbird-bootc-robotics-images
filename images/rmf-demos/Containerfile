@@ -1,0 +1,157 @@
+# hbr-rmf-demos: the main simulation/workspace image (office demo scope for
+# v1 — see README.md "Open follow-ups" for the hotel/airport fast-follow).
+# Builder stage extends hbr-rmf-core with Gazebo/Nav2/RViz + rmf_demos
+# itself; runtime stage starts fresh FROM bootc-os and copies in only what's
+# needed to run (rule #4).
+#
+# Build: build/build.sh images/rmf-demos
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-rmf-core:${BASE_TAG} AS builder
+
+RUN micromamba install -y -n ros_env -c robostack-jazzy -c conda-forge \
+      ros-jazzy-desktop-full \
+      ros-jazzy-ros-gz-sim \
+      ros-jazzy-ros-gz-bridge \
+      ros-jazzy-ros-gz-image \
+      ros-jazzy-ros-gz-interfaces \
+      ros-jazzy-navigation2 \
+      ros-jazzy-nav2-bringup \
+      ros-jazzy-slam-toolbox \
+      ros-jazzy-robot-localization \
+      ros-jazzy-pointcloud-to-laserscan \
+      ros-jazzy-laser-filters \
+    && micromamba clean -a -y
+
+RUN bash -c "source ${ROS_ENV_SETUP} && gz sim --version"
+
+# rmf_visualization_rviz2_plugins was COLCON_IGNORE'd in base/rmf-core
+# (needs rviz_common — a 148-package/263MB dependency pull, too heavy for
+# that layer). ros-jazzy-desktop-full above already includes rviz_common,
+# so un-ignore it here and let this layer's colcon build pick it up fresh.
+RUN rm -f ${RMF_WS}/src/rmf/rmf_visualization/rmf_visualization_rviz2_plugins/COLCON_IGNORE
+
+ARG RMF_DEMOS_COMMIT
+RUN cd ${RMF_WS}/src && \
+    git clone https://github.com/open-rmf/rmf_demos.git && \
+    cd rmf_demos && git checkout ${RMF_DEMOS_COMMIT}
+
+# fiona (rmf_demos_maps): building_map_generator needs it for map/world/
+# crowdsim/navgraph generation at build time. DELIBERATELY NOT INSTALLED —
+# genuinely conflicts with numpy/GDAL versions already pinned by the rest
+# of ros_env. For our office/collision_test demo this is fine — it renders
+# the custom collision_test.world, not any of rmf_demos_maps's generated
+# worlds. CAVEAT: this means airport/hotel stock maps are NOT available in
+# this image (fast-follow, see README.md). (rmf_traffic_editor_test_maps —
+# the other fiona-dependent package — is COLCON_IGNORE'd one layer down in
+# base/rmf-core/Containerfile, where it's actually vcs-imported and built.)
+RUN touch ${RMF_WS}/src/rmf_demos/rmf_demos_maps/COLCON_IGNORE
+
+RUN micromamba run -n ros_env bash -c "source ${ROS_ENV_SETUP} && \
+    export CPATH=\"${MAMBA_ROOT_PREFIX}/envs/ros_env/include/eigen3:/usr/include:\${CPATH}\" && \
+    export LIBRARY_PATH=\"/usr/lib64:\${LIBRARY_PATH}\" && \
+    export PKG_CONFIG_PATH=\"/usr/lib64/pkgconfig:\${PKG_CONFIG_PATH}\" && \
+    export CXXFLAGS=\"-include cassert -fpermissive -DASIO_STANDALONE \${CXXFLAGS}\" && \
+    colcon build --continue-on-error --event-handlers console_direct+"
+
+# Runtime Python deps for fleet_manager.py / dashboard bridge scripts.
+# requests: rmf_demos_fleet_adapter's own RobotClientAPI.py imports it
+# directly for its HTTP client.
+RUN bash -c "source ${ROS_ENV_SETUP} && pip install --no-cache-dir \
+    'fastapi>=0.79.0' 'uvicorn>=0.18.2' pydantic flask-socketio \
+    datamodel_code_generator websockets requests"
+
+# Override stock TinyRobot model with the lidar-equipped version (+ colored
+# variants) before creating the Open-RMF/ Fuel-URI symlink dir.
+COPY common/models/TinyRobot/ ${RMF_WS}/install/rmf_demos_assets/share/rmf_demos_assets/models/TinyRobot/
+COPY common/models/TinyRobot2/ ${RMF_WS}/install/rmf_demos_assets/share/rmf_demos_assets/models/TinyRobot2/
+COPY common/models/TinyRobot3/ ${RMF_WS}/install/rmf_demos_assets/share/rmf_demos_assets/models/TinyRobot3/
+COPY common/models/TinyRobot4/ ${RMF_WS}/install/rmf_demos_assets/share/rmf_demos_assets/models/TinyRobot4/
+RUN MODELS_DIR="${RMF_WS}/install/rmf_demos_assets/share/rmf_demos_assets/models" && \
+    mkdir -p "${MODELS_DIR}/Open-RMF" && \
+    for m in "${MODELS_DIR}"/*/; do \
+      name=$(basename "$m"); \
+      [ "$name" = "Open-RMF" ] && continue; \
+      ln -sf "../${name}" "${MODELS_DIR}/Open-RMF/${name}"; \
+    done
+
+# ============================== runtime stage ==============================
+FROM quay.io/hummingbird-community/bootc-os:latest
+
+ARG FEDORA_FALLBACK_RELEASE=43
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
+
+# Runtime-only libs: Mesa/EGL/GLX for Gazebo+RViz rendering (GPU path is
+# runtime-injected by the NVIDIA container toolkit/OpenShift GPU operator —
+# the loader stack here just needs to exist) and Xvfb/x11vnc/openbox for
+# the noVNC virtual display. tinyxml/boost/libatomic runtime libs are
+# needed by the colcon-built binaries copied in below.
+RUN dnf -y install \
+      mesa-libGL mesa-libEGL mesa-dri-drivers \
+      xorg-x11-server-Xvfb x11vnc openbox \
+      tinyxml boost libatomic \
+    && dnf clean all
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV PATH=${MAMBA_ROOT_PREFIX}/envs/ros_env/bin:${PATH}
+ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+ENV RMF_WS=/opt/rmf/rmf_core_ws
+ENV ROS_LOG_DIR=/opt/rmf/.ros/log
+ENV HOME=/opt/rmf
+
+COPY --from=builder /opt/micromamba /opt/micromamba
+COPY --from=builder ${RMF_WS}/install ${RMF_WS}/install
+
+# Fix RViz Map display shader for Mesa software rendering (noVNC uses
+# llvmpipe). Mesa's GLSL linker rejects sampler1D + sampler2D on the same
+# program. Replace the palette-based shader with one that hardcodes map
+# colors directly, eliminating the palette texture and the sampler type
+# conflict entirely.
+RUN MATERIALS=${MAMBA_ROOT_PREFIX}/envs/ros_env/share/rviz_rendering/ogre_media/materials && \
+    printf '%s\n' \
+      '#version 120' \
+      'varying vec2 UV;' \
+      'uniform sampler2D eight_bit_image;' \
+      'uniform float alpha;' \
+      'void main()' \
+      '{' \
+      '  float val = texture2D(eight_bit_image, UV).x;' \
+      '  float is_unknown = step(0.99, val);' \
+      '  float is_free = step(val, 0.004);' \
+      '  float is_occ = (1.0 - is_unknown) * (1.0 - is_free);' \
+      '  float occ_shade = 1.0 - clamp(val * 255.0 / 100.0, 0.0, 1.0);' \
+      '  vec3 color = is_free * vec3(0.94, 0.94, 0.94)' \
+      '             + is_unknown * vec3(0.6, 0.6, 0.6)' \
+      '             + is_occ * vec3(occ_shade);' \
+      '  gl_FragColor = vec4(color, alpha);' \
+      '}' \
+      > "${MATERIALS}/glsl120/indexed_8bit_image.frag" && \
+    sed -i '/param_named palette/d' \
+      "${MATERIALS}/scripts/indexed_8bit_image.material" && \
+    sed -i '/test_20x20/d' \
+      "${MATERIALS}/scripts/indexed_8bit_image.material"
+
+# Shared helper scripts, launch files, config files, and custom worlds.
+COPY common/scripts/ /opt/rmf/scripts/
+COPY common/launch/ /opt/rmf/demos/common/launch/
+COPY common/config/ /opt/rmf/config/
+COPY common/models/ /opt/rmf/models/
+COPY common/worlds/ /opt/rmf/worlds/
+COPY images/rmf-demos/ros-env.sh /opt/rmf/scripts/ros-env.sh
+
+RUN find /opt/rmf/scripts /opt/rmf/demos -name '*.sh' -exec chmod +x {} + && \
+    chmod +x /opt/rmf/scripts/wait-for-world.sh
+
+# OpenShift arbitrary-UID pattern (rule #4): USER 1001 for local non-root
+# runs, group 0 + g+rwX so an assigned arbitrary UID can still write logs.
+RUN mkdir -p /opt/rmf/.ros/log && \
+    chown -R 1001:0 /opt/rmf && \
+    chmod -R g+rwX /opt/rmf
+
+USER 1001
+
+WORKDIR /opt/rmf
+
+CMD ["tail", "-f", "/dev/null"]

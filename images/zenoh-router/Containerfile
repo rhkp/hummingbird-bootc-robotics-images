@@ -1,0 +1,35 @@
+# hbr-zenoh-router: the rmw_zenoh bundled router (rmw_zenohd), used to
+# guarantee protocol version compatibility with rmw_zenoh_cpp clients.
+#
+# Rule #3 applied: no independent micromamba env. hbr-ros-base's ros_env
+# already contains exactly zenoh-router's full dependency set (ros-base +
+# rmw_zenoh_cpp) — this builder stage adds nothing at all, it exists solely
+# so the runtime stage can COPY --from=builder the already-built conda env.
+#
+# Build: build/build.sh images/zenoh-router
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-ros-base:${BASE_TAG} AS builder
+
+# ============================== runtime stage ==============================
+FROM quay.io/hummingbird-community/bootc-os:latest
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV PATH=${MAMBA_ROOT_PREFIX}/envs/ros_env/bin:${PATH}
+ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+
+COPY --from=builder /opt/micromamba /opt/micromamba
+COPY images/zenoh-router/router-config.json5 /etc/zenoh/router-config.json5
+
+RUN mkdir -p /var/zenoh && \
+    chgrp -R 0 /var/zenoh /etc/zenoh && \
+    chmod -R g+rwX /var/zenoh /etc/zenoh
+
+USER 1001
+WORKDIR /var/zenoh
+
+EXPOSE 7447
+
+ENTRYPOINT ["/bin/bash", "-c"]
+CMD ["source ${ROS_ENV_SETUP} && exec ros2 run rmw_zenoh_cpp rmw_zenohd -- --config /etc/zenoh/router-config.json5"]

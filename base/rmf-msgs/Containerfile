@@ -1,0 +1,47 @@
+# hbr-rmf-msgs: vcs-imports + colcon-builds ONLY the pure interface/message
+# packages from rmf.repos (see pins.py's docstring for exactly which 4 of
+# the 17 repos these are, and why). Builder-tier only — never deployed.
+#
+# Consumed by:
+#   - base/rmf-core (adds the remaining 13 repos + heavy C++ deps on top)
+#   - images/rmf-web-zenoh (needs messages only, never rmf-core's heavy libs)
+#
+# Build: build/build.sh base/rmf-msgs
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-ros-base:${BASE_TAG}
+
+ENV RMF_WS=/opt/rmf/rmf_core_ws
+WORKDIR ${RMF_WS}
+RUN mkdir -p src
+
+# vcstool needs pkg_resources, which newer setuptools no longer bundles by
+# default. jinja2 + datamodel-codegen: rmf_api_msgs's CMakeLists.txt runs a
+# build-time Python schema-codegen step (generate_py_schemas.py) that
+# imports jinja2 directly (hard failure without it — confirmed:
+# "ModuleNotFoundError: No module named 'jinja2'") and optionally shells
+# out to `datamodel-codegen` (degrades to a CMake warning without it,
+# skipping Python schema model generation, rather than failing — installed
+# here anyway so this layer's schema codegen is fully functional, not
+# silently degraded). The old repo's Containerfiles never hit this: their
+# `ros-jazzy-desktop-full` metapackage (installed before the colcon build
+# there, unlike our minimal `ros-base`) pulls jinja2 in transitively.
+RUN bash -c "source ${ROS_ENV_SETUP} && pip install --no-cache-dir 'setuptools<81' vcstool pyyaml jinja2 datamodel-code-generator"
+
+# Generate both rmf-msgs.repos (used here) and rmf-core.repos (left in
+# /tmp for base/rmf-core, built FROM this image, to consume directly —
+# avoids re-fetching rmf.repos and re-running generate-repos.py there).
+COPY base/rmf-msgs/pins.py base/rmf-msgs/generate-repos.py /tmp/
+RUN cd /tmp && \
+    curl -sL https://raw.githubusercontent.com/open-rmf/rmf/main/rmf.repos -o rmf.repos.orig && \
+    bash -c "source ${ROS_ENV_SETUP} && python3 /tmp/generate-repos.py /tmp/rmf.repos.orig /tmp/rmf-msgs.repos /tmp/rmf-core.repos"
+
+RUN cd src && bash -c "source ${ROS_ENV_SETUP} && vcs import . < /tmp/rmf-msgs.repos"
+
+RUN micromamba run -n ros_env bash -c "source ${ROS_ENV_SETUP} && \
+    colcon build --continue-on-error --event-handlers console_direct+"
+
+# Smoke test: the message packages import cleanly.
+RUN bash -c "source ${ROS_ENV_SETUP} && source install/setup.bash && \
+    ros2 interface list | grep -E 'rmf_fleet_msgs|rmf_task_msgs|rmf_traffic_msgs'"

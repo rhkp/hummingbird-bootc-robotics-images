@@ -1,0 +1,71 @@
+# hbr-ros-base: the ONE shared RoboStack/ROS2 foundation every ROS-needing
+# image in this repo derives from (see README.md rule #3). Builder-tier
+# only — never deployed as a running container. Carries the full build
+# toolchain (git/gcc/cmake/make/patch/libatomic) needed by every downstream
+# colcon build; leaf images copy just the conda env out via
+# `COPY --from=... /opt/micromamba`, never the toolchain itself.
+#
+# Build (x86_64 build VM, podman — not locally, base images are amd64-only):
+#   build/build.sh base/ros-base
+
+ARG BOOTC_OS_IMAGE=quay.io/hummingbird-community/bootc-os:latest
+FROM ${BOOTC_OS_IMAGE}
+
+ARG FEDORA_FALLBACK_RELEASE=43
+ARG ROS_DISTRO=jazzy
+ARG COMPILERS_VERSION=1.11.0
+
+# bootc-os ships its own hummingbird.repo, covering the toolchain packages
+# below almost entirely — but not their few transitive deps (e.g. cmake's
+# libjsoncpp, boost-devel's python3-numpy). See README.md for the full
+# package-provenance rationale (ported from hummingbird/README.md).
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
+
+RUN dnf -y install curl tar bzip2 which git gcc gcc-c++ cmake make patch libatomic \
+    && dnf clean all
+
+COPY base/scripts/install-micromamba.sh /tmp/install-micromamba.sh
+RUN chmod +x /tmp/install-micromamba.sh && /tmp/install-micromamba.sh
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV PATH=${MAMBA_ROOT_PREFIX}/envs/ros_env/bin:/usr/local/bin:${PATH}
+ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+
+# ros-base + rmw_zenoh_cpp is the full dependency set every ROS-needing
+# image in this repo actually needs at minimum:
+#   - images/zenoh-router needs exactly this and nothing more (rule #3 —
+#     it builds `FROM hbr-ros-base` directly, no independent env).
+#   - base/rmf-msgs and base/rmf-core layer additional colcon-built
+#     packages on top.
+#   - images/rmf-demos additionally micromamba-installs desktop-full/
+#     Gazebo/Nav2 packages on top of hbr-rmf-core's env.
+#
+# `compilers` is PINNED (not left floating): an earlier unpinned build
+# solved to a newer `compilers` release (GCC 15.x) purely because
+# conda-forge published a newer build between runs. GCC 15's stricter
+# linker defaults broke transitive link propagation that GCC 14 tolerated
+# (rmf_traffic's vendored FCL stopped propagating its own ccd/octomap link
+# deps to consumers). Update this pin deliberately (see versions.env), not
+# as a side effect of an unrelated rebuild.
+#
+# nlohmann_json: header-only, near-zero-cost to add here rather than only
+# to hbr-rmf-msgs — needed by rmf_api_msgs (a msgs-layer package, via
+# `find_package(nlohmann_json)` in its CMakeLists.txt) AND by
+# thirdparty/nlohmann_json_schema_validator_vendor (a core-layer package).
+# Confirmed missing the hard way: rmf_api_msgs failed standalone against
+# ros-base alone with "Could not find a package configuration file
+# provided by nlohmann_json" — the old repo's Containerfiles never hit
+# this because they always built all 17 rmf.repos packages together, where
+# something else in that wider set pulled it in as a transitive conda dep.
+RUN micromamba create -y -n ros_env -c robostack-${ROS_DISTRO} -c conda-forge \
+      ros-${ROS_DISTRO}-ros-base \
+      ros-${ROS_DISTRO}-rmw-zenoh-cpp \
+      colcon-common-extensions \
+      compilers=${COMPILERS_VERSION} \
+      nlohmann_json \
+    && micromamba clean -a -y
+
+# Verification checks — fail the build loudly if any of these don't work.
+RUN bash -c "source ${ROS_ENV_SETUP} && ros2 doctor --report | head -50"
+RUN bash -c "source ${ROS_ENV_SETUP} && python3 -c 'import rclpy; print(\"rclpy OK\")'"

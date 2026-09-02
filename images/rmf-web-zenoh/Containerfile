@@ -1,0 +1,64 @@
+# hbr-rmf-web-zenoh: rmf-web's API server, rebuilt from source on bootc-os
+# instead of extending the third-party ghcr.io/open-rmf/rmf-web/api-server
+# image (rule #1 — no exceptions). Reverse-engineered from rmf-web's own CI
+# (.github/minimal-rmf/Dockerfile + .github/api-server/Dockerfile) — see
+# README.md for the full research writeup.
+#
+# Only needs hbr-rmf-msgs (message packages), never hbr-rmf-core's heavy
+# C++ libs — mirrors upstream's own `ros-jazzy-rmf-*-msgs` vs `rmf-dev` apt
+# package split. Swaps rmw_cyclonedds_cpp (upstream's default) for
+# rmw_zenoh_cpp (already in hbr-ros-base's env) to match this project's
+# middleware choice.
+#
+# HIGHEST-UNCERTAINTY IMAGE in this migration — pnpm/Node build behavior
+# against a non-Ubuntu, non-glibc-assumption base is unverified. Budget
+# real iteration time here.
+#
+# Build: build/build.sh images/rmf-web-zenoh
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-rmf-msgs:${BASE_TAG} AS builder
+
+RUN curl -fsSL https://get.pnpm.io/install.sh | bash -
+ENV PNPM_HOME=/root/.local/share/pnpm
+ENV PATH=${PNPM_HOME}/bin:${PATH}
+RUN pnpm runtime set node lts -g
+
+ARG RMF_WEB_REF
+RUN mkdir -p /ws && \
+    curl -L https://github.com/open-rmf/rmf-web/archive/${RMF_WEB_REF}.tar.gz -o /tmp/rmf_web.tar.gz && \
+    tar zxf /tmp/rmf_web.tar.gz -C /ws --strip-components=1 && \
+    rm /tmp/rmf_web.tar.gz
+
+RUN cd /ws && \
+    (pnpm install --filter api-server... || (pnpm approve-builds --all && pnpm install --filter api-server...))
+
+RUN cd /ws/packages/api-server && pnpm run prepack
+
+# ============================== runtime stage ==============================
+FROM quay.io/hummingbird-community/bootc-os:latest
+
+ARG FEDORA_FALLBACK_RELEASE=43
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
+RUN dnf -y install python3-pip && dnf clean all
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+
+COPY --from=builder /opt/micromamba /opt/micromamba
+COPY --from=builder /ws/packages/api-server/dist /ws
+COPY --from=builder /ws/packages/api-server/sqlite_local_config.py /ws/sqlite_local_config.py
+
+RUN pip3 install --break-system-packages --no-cache-dir /ws/api_server-*.whl && \
+    rm /ws/api_server-*.whl
+
+ENV RMF_API_SERVER_CONFIG=/ws/sqlite_local_config.py
+
+RUN mkdir -p /ws/run/cache && chgrp -R 0 /ws && chmod -R g+rwX /ws
+
+USER 1001
+WORKDIR /ws
+
+ENTRYPOINT ["bash", "-c", "source ${ROS_ENV_SETUP} && mkdir -p run/cache && python3 -m api_server"]

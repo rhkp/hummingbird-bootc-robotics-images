@@ -1,0 +1,156 @@
+# hbr-bootc-vm-host: bootc HOST image for the OpenRMF office demo — a
+# real bootable OS (own kernel, systemd PID 1), not an OpenShift Pod base.
+# The one deliberate exception to rule #4's "slim multi-stage runtime"
+# convention (rule #5) — a host OS legitimately keeps its package manager.
+#
+# The host itself stays minimal: no ROS, no RoboStack, no dnf ROS packages
+# at all. The actual RMF workload runs as separate containers bound in via
+# Quadlet (systemd generator, part of Podman) — those bound images are
+# hbr-rmf-demos / hbr-zenoh-router / hbr-novnc, built elsewhere in this repo.
+#
+# Build (x86_64 only, from repo root like every other image — see build/build.sh):
+#   build/build.sh images/bootc-vm-host
+
+FROM quay.io/hummingbird-community/bootc-os:latest
+
+ARG FEDORA_FALLBACK_RELEASE=43
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
+
+# Copy the Quadlet unit files and register each as a bootc bound image, so
+# `bootc install`/`bootc upgrade` pulls and pins these workload images
+# alongside the host OS image. The source .container files use the literal
+# placeholder REGISTRY_PLACEHOLDER instead of a real registry (this repo is
+# public, and every deployer publishes to their own namespace) — substitute
+# the real one from the REGISTRY build-arg (same versions.env value every
+# other image's FROM line resolves against) right after copying them in.
+ARG REGISTRY=quay.io/your-org
+COPY images/bootc-vm-host/containers/rmf-zenoh-router.container /usr/share/containers/systemd/rmf-zenoh-router.container
+COPY images/bootc-vm-host/containers/rmf-simulation.container /usr/share/containers/systemd/rmf-simulation.container
+COPY images/bootc-vm-host/containers/rmf-fleet-monitor.container /usr/share/containers/systemd/rmf-fleet-monitor.container
+COPY images/bootc-vm-host/containers/rmf-novnc.container /usr/share/containers/systemd/rmf-novnc.container
+COPY images/bootc-vm-host/containers/rmf-task-dispatch.container /usr/share/containers/systemd/rmf-task-dispatch.container
+COPY images/bootc-vm-host/containers/rmf-fleet-coordinator.container /usr/share/containers/systemd/rmf-fleet-coordinator.container
+COPY images/bootc-vm-host/containers/rmf-robot-tinyRobot1.container /usr/share/containers/systemd/rmf-robot-tinyRobot1.container
+COPY images/bootc-vm-host/containers/rmf-robot-tinyRobot2.container /usr/share/containers/systemd/rmf-robot-tinyRobot2.container
+COPY images/bootc-vm-host/containers/rmf-robot-tinyRobot3.container /usr/share/containers/systemd/rmf-robot-tinyRobot3.container
+COPY images/bootc-vm-host/containers/rmf-robot-tinyRobot4.container /usr/share/containers/systemd/rmf-robot-tinyRobot4.container
+
+RUN sed -i "s#REGISTRY_PLACEHOLDER#${REGISTRY}#g" /usr/share/containers/systemd/rmf-*.container
+
+RUN install -d /usr/lib/bootc/bound-images.d && \
+    for unit in rmf-zenoh-router rmf-simulation rmf-fleet-monitor rmf-novnc rmf-task-dispatch \
+                rmf-fleet-coordinator rmf-robot-tinyRobot1 rmf-robot-tinyRobot2 rmf-robot-tinyRobot3 rmf-robot-tinyRobot4; do \
+      ln -sf "/usr/share/containers/systemd/${unit}.container" "/usr/lib/bootc/bound-images.d/${unit}.container"; \
+    done
+
+# Script overlay: office/helm/files/ (Helm ConfigMap-mounted, always wins
+# over what's baked into the app image) has diverged from common/scripts/
+# baked into hbr-rmf-demos. Bake the real (Helm) versions in here and
+# Volume-mount them over the stale/missing paths in the Quadlet units — the
+# same override Helm achieves via ConfigMap, just via bootc host + Quadlet.
+COPY images/bootc-vm-host/scripts-overlay/ /opt/rmf-overlay/
+# Defensive, not just fixed at the source: `cp` from a git checkout
+# preserves non-executable file permissions — Helm's ConfigMap mount papers
+# over this with its own defaultMode: 0755, but a plain bind mount
+# (Volume=...:ro) uses the host file's actual mode directly.
+RUN chmod +x /opt/rmf-overlay/*.sh
+
+# The `admin` user (config.toml) has a key but no password — sudo would
+# always fail asking for a password that doesn't exist. Needed for live
+# debugging on real hardware without a full rebuild cycle each time — a
+# demo VM, not a shared multi-tenant host, so unrestricted NOPASSWD sudo
+# for this one user is an acceptable tradeoff here.
+RUN echo 'admin ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/90-admin-nopasswd && \
+    chmod 0440 /etc/sudoers.d/90-admin-nopasswd
+
+# openssl isn't installed by default on Hummingbird — resolves cleanly from
+# Hummingbird's own default repo alone.
+RUN dnf -y install openssl
+
+# Self-signed TLS cert for noVNC (websockify --cert). There's no fixed
+# domain/Elastic IP for this demo VM, so a real cert isn't practical.
+RUN mkdir -p /etc/rmf-novnc-tls && \
+    openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
+      -keyout /etc/rmf-novnc-tls/key.pem \
+      -out /etc/rmf-novnc-tls/cert.pem \
+      -subj "/CN=hbr-rmf-office-bootc-vm" && \
+    cat /etc/rmf-novnc-tls/cert.pem /etc/rmf-novnc-tls/key.pem > /etc/rmf-novnc-tls/combined.pem && \
+    chmod 644 /etc/rmf-novnc-tls/combined.pem
+
+# firewalld IS installed and enabled by default on Hummingbird's bootc-os.
+# Every .container unit uses Network=host, so there's no container-to-
+# container boundary for the OS firewall to usefully enforce — the real
+# security boundary is the cloud provider's security group. `trusted` zone
+# is required (not just opening 7447/5900/8080): Gazebo's own transport
+# (gz-transport) uses UDP multicast discovery plus per-topic ephemeral TCP
+# data channels that can't be allowlisted by a fixed port range.
+RUN firewall-offline-cmd --add-port=7447/tcp \
+    --add-port=5900/tcp \
+    --add-port=8080/tcp && \
+    firewall-offline-cmd --set-default-zone=trusted
+
+# ============================== NVIDIA GPU support ==============================
+# gpu_lidar (Gazebo's GPU-rendered lidar sensor, which Nav2/SLAM/collision
+# avoidance depend on) silently produces no data on software rendering — a
+# real GPU is required, not optional, for the 4-robot collision_test.world
+# demo. Higher risk than everything else in this Containerfile.
+#
+# bootc images are immutable at runtime (/usr is read-only after boot), so
+# the NVIDIA kernel module MUST be built at image-build time against this
+# image's own kernel.
+#
+# enable-fedora-repos.sh already set /etc/dnf/vars/releasever above, which
+# is what makes RPM Fusion's own bundled repo files (installed via
+# rpm -Uvh below) resolve correctly without any further $releasever
+# handling here.
+RUN curl -sLO https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm && \
+    curl -sLO https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm && \
+    rpm -Uvh --nodeps --nosignature rpmfusion-free-release-*.noarch.rpm rpmfusion-nonfree-release-*.noarch.rpm && \
+    rm -f rpmfusion-*-release-*.noarch.rpm
+
+# nvidia-container-toolkit is NOT part of RPM Fusion (driver packages
+# only) — it's a separate NVIDIA-hosted repo.
+RUN curl -sL https://nvidia.github.io/libnvidia-container/stable/rpm/nvidia-container-toolkit.repo \
+      -o /etc/yum.repos.d/nvidia-container-toolkit.repo
+
+# kernel-devel must match whatever kernel actually ends up in the image —
+# NOT necessarily the base image's original kernel (dnf resolves
+# kernel-devel to the latest available build, dragging kernel/kernel-core
+# along as a matched set). Read the kernel version AFTER installing, not
+# before — that's the only point it's ground truth.
+#
+# /var/tmp genuinely doesn't exist on Hummingbird — rpmbuild (which
+# akmodsbuild shells out to) needs it for staging. akmods --force exits 0
+# even when the actual compile fails, so the explicit post-build check
+# below exists specifically so a build failure here can never again slip
+# through silently.
+RUN mkdir -p /var/tmp && chmod 1777 /var/tmp && \
+    dnf -y install kernel-devel akmod-nvidia nvidia-container-toolkit && \
+    dnf clean all && \
+    kver="$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core)" && \
+    echo "Building NVIDIA module for kernel: ${kver}" && \
+    akmods --kernels "${kver}" --force && \
+    ls "/usr/lib/modules/${kver}/extra/nvidia/nvidia.ko.xz" || \
+      { echo "ERROR: nvidia.ko was not built — akmods exits 0 even on failure, don't trust it alone"; exit 1; }
+
+# The kernel upgrade above leaves the new kernel with NO initramfs at all —
+# the kernel-core package's own post-install hook assumes a live booted
+# system, which a podman build sandbox isn't. Generate it explicitly.
+# --no-hostonly matches this image's own dracut.conf.d/20-bootc.conf
+# setting (hostonly=no) — broad driver inclusion for portability to real
+# hardware.
+RUN kver="$(rpm -q --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' kernel-core)" && \
+    dracut --force --no-hostonly "/usr/lib/modules/${kver}/initramfs.img" "${kver}"
+
+# Building the module isn't enough: a headless server never triggers the
+# on-demand udev/nvidia-modprobe load a desktop's Xorg/Wayland session
+# normally would — load the modules explicitly.
+RUN printf '%s\n' nvidia nvidia_uvm nvidia_modeset nvidia_drm \
+      > /etc/modules-load.d/nvidia.conf
+
+# Host-level CDI-generation unit (not Quadlet — this is a bare host
+# command, not a Podman container). Enabling at build time works offline,
+# same mechanism dnf package scriptlets already rely on.
+COPY images/bootc-vm-host/containers/nvidia-cdi-generate.service /usr/lib/systemd/system/nvidia-cdi-generate.service
+RUN systemctl enable nvidia-cdi-generate.service

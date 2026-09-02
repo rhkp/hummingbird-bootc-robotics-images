@@ -1,0 +1,37 @@
+# hbr-novnc: lightweight noVNC + websockify sidecar. No ROS dependency at
+# all — correctly independent of the hbr-ros-base chain (rule #3 only
+# applies to images that actually need ROS2/RMF), but still multi-stage
+# per rule #4 so git/pip never reach the runtime image.
+#
+# Build: build/build.sh images/novnc
+
+ARG FEDORA_FALLBACK_RELEASE=43
+
+FROM quay.io/hummingbird-community/bootc-os:latest AS builder
+ARG FEDORA_FALLBACK_RELEASE
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
+RUN dnf -y install python3 python3-pip git && dnf clean all
+RUN pip3 install --no-cache-dir --target=/opt/novnc-deps websockify && \
+    git clone --depth 1 https://github.com/novnc/noVNC.git /opt/novnc
+
+# ============================== runtime stage ==============================
+FROM quay.io/hummingbird-community/bootc-os:latest
+ARG FEDORA_FALLBACK_RELEASE
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
+RUN dnf -y install python3 && dnf clean all
+
+COPY --from=builder /opt/novnc-deps /opt/novnc-deps
+COPY --from=builder /opt/novnc /opt/novnc
+ENV PYTHONPATH=/opt/novnc-deps
+
+RUN chgrp -R 0 /opt/novnc /opt/novnc-deps && chmod -R g+rwX /opt/novnc /opt/novnc-deps
+
+USER 1001
+WORKDIR /opt/novnc
+
+EXPOSE 8080
+
+ENTRYPOINT ["python3", "-m", "websockify"]
+CMD ["--web", "/opt/novnc", "8080", "127.0.0.1:5900"]

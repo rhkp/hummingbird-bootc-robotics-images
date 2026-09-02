@@ -1,0 +1,19 @@
+[Unit]
+Description=OpenRMF fleet-state monitor
+After=rmf-simulation.service
+Requires=rmf-simulation.service
+
+[Container]
+Image=REGISTRY_PLACEHOLDER/hbr-rmf-demos:latest
+ContainerName=rmf-fleet-monitor
+Network=host
+Pull=never
+GlobalArgs=--storage-opt=additionalimagestore=/usr/lib/bootc/storage
+Exec=/opt/rmf/scripts/run-fleet-monitor.sh
+Environment=ZENOH_ROUTER_ENDPOINT=tcp/localhost:7447
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
