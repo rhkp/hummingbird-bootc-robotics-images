@@ -74,8 +74,17 @@ sudo "${PODMAN}" pull "${HOST_IMAGE}"
 # image ...: does not resolve to an image ID", from bib's install step
 # running with --skip-fetch-check). Pull every bound image's Image= value
 # too, not just HOST_IMAGE.
+#
+# The SOURCE .container files (read here) still contain the literal
+# REGISTRY_PLACEHOLDER string — that only gets substituted for the REAL
+# registry *inside* the built image, by the Containerfile's own `sed` step
+# (see images/bootc-vm-host/Containerfile). Apply the same substitution
+# here so we pull the same images the running host will actually resolve.
+# Confirmed the hard way: without this, podman fails immediately with
+# "repository name must be lowercase" trying to pull literally
+# "REGISTRY_PLACEHOLDER/hbr-rmf-demos:latest".
 for unit in "${BOOTC_VM_DIR}"/containers/*.container; do
-  bound_image="$(sed -n 's/^Image=//p' "${unit}")"
+  bound_image="$(sed -n 's/^Image=//p' "${unit}" | sed "s#REGISTRY_PLACEHOLDER#${DEFAULT_REGISTRY}#")"
   echo "Pulling bound image ${bound_image} (from $(basename "${unit}"))..."
   sudo "${PODMAN}" pull "${bound_image}"
 done

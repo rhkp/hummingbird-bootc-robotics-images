@@ -22,9 +22,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOOTC_VM_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 AWS_ENV_FILE="${AWS_ENV_FILE:-${BOOTC_VM_DIR}/aws.env}"
 
-if [[ ( -z "${EC2_SUBNET_ID:-}" || -z "${BASE_SECURITY_GROUP:-}" ) && -f "${AWS_ENV_FILE}" ]]; then
-  # shellcheck disable=SC1090
-  source "${AWS_ENV_FILE}"
+# Fill in only the vars NOT already set, one at a time — a plain `source`
+# of the whole file would unconditionally overwrite an explicitly-exported
+# override even for a var you didn't mean to touch. Confirmed the hard
+# way: passing EC2_SUBNET_ID inline without ALSO passing
+# BASE_SECURITY_GROUP still silently reset EC2_SUBNET_ID back to the
+# file's stale value, because sourcing ran (BASE_SECURITY_GROUP was still
+# unset) and clobbered EC2_SUBNET_ID along with it.
+if [[ -f "${AWS_ENV_FILE}" ]]; then
+  while IFS='=' read -r key value; do
+    case "${key}" in ''|'#'*) continue ;; esac
+    [ -z "${!key:-}" ] && export "${key}=${value}"
+  done < "${AWS_ENV_FILE}"
 fi
 
 if [[ -z "${EC2_SUBNET_ID:-}" || -z "${BASE_SECURITY_GROUP:-}" ]]; then

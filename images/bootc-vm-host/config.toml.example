@@ -1,0 +1,24 @@
+# bootc-image-builder customization — copy to config.toml and edit
+# (config.toml is gitignored, this .example is the committed template):
+#   cp images/bootc-vm-host/config.toml.example images/bootc-vm-host/config.toml
+#
+# Creates a login user on the built image (bootc-os ships no default
+# user/password). Replace the key below with your own SSH public key
+# (any standard OpenSSH format — rsa, ed25519, ecdsa all work; no
+# bootc-specific restriction) before building; neither fedora-bootc nor
+# Hummingbird's bootc-os ship cloud-init, so AWS's own key-pair injection
+# wouldn't take effect instead — this is the only way to get SSH access.
+[[customizations.user]]
+name = "admin"
+groups = ["wheel"]
+key = "REPLACE_WITH_YOUR_SSH_PUBLIC_KEY"
+
+# bib's default root partition size isn't nearly enough for the bound
+# workload images installed alongside the host OS — confirmed by a real
+# build failure ("no space left on device") on the old repo's bootc-vm
+# lineage unpacking a ~7GB app image. hbr-rmf-demos alone is ~10.5GB, plus
+# hbr-zenoh-router and hbr-novnc — size generously rather than tune this
+# exactly, EC2 gp3 storage is cheap.
+[[customizations.filesystem]]
+mountpoint = "/"
+minsize = "40 GiB"

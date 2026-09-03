@@ -7,6 +7,8 @@ versions.env
 !versions.env.example
 images/bootc-vm-host/aws.env
 !images/bootc-vm-host/aws.env.example
+images/bootc-vm-host/config.toml
+!images/bootc-vm-host/config.toml.example
 *.pem
 *.key
 *.p12
