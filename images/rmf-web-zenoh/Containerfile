@@ -42,16 +42,47 @@ FROM quay.io/hummingbird-community/bootc-os:latest
 ARG FEDORA_FALLBACK_RELEASE=43
 COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
 RUN chmod +x /tmp/enable-fedora-repos.sh && /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}"
-RUN dnf -y install python3-pip && dnf clean all
 
 ENV MAMBA_ROOT_PREFIX=/opt/micromamba
 ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+# Matches hbr-rmf-msgs's own RMF_WS — api_server directly imports RMF
+# message bindings (`from rmf_fleet_msgs.msg import ...`), which only exist
+# in the colcon-built install/ overlay, not the conda env itself. Confirmed
+# the hard way: without this, `ModuleNotFoundError: No module named
+# 'rmf_fleet_msgs'` — the conda env alone only provides ROS2 core
+# (rclpy/ros2cli), never RMF's own message packages.
+ENV RMF_WS=/opt/rmf/rmf_core_ws
 
 COPY --from=builder /opt/micromamba /opt/micromamba
+COPY --from=builder ${RMF_WS}/install ${RMF_WS}/install
 COPY --from=builder /ws/packages/api-server/dist /ws
 COPY --from=builder /ws/packages/api-server/sqlite_local_config.py /ws/sqlite_local_config.py
 
-RUN pip3 install --break-system-packages --no-cache-dir /ws/api_server-*.whl && \
+# Install the wheel into the CONDA env's own pip, not a separate
+# dnf-installed system python3-pip. Confirmed the hard way: the old
+# system-pip approach put api_server + fastapi + pydantic + pydantic_core
+# under system Python's site-packages, but the deploying Helm chart's
+# rmf-web container runs `source ${ROS_ENV_SETUP} && exec rmf_api_server`
+# (needed as-is for the old single-Python jazzy image) — sourcing the conda
+# env sets PYTHONPATH to conda's own (Python 3.12) site-packages, which
+# then leaks into whichever interpreter `rmf_api_server`'s shebang actually
+# invokes, regardless of that interpreter's own version. Real failure:
+# `ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'` —
+# Python resolved `pydantic` from the conda path (which has no matching
+# compiled pydantic_core for that Python version) instead of the correct,
+# complete one pip actually installed. Installing into the conda env's own
+# pip instead — matching how the OLD image only ever had ONE Python
+# environment — eliminates the split entirely: `rmf_api_server`'s shebang
+# now points at conda's own python3, and every dependency lives in that
+# same env, self-consistently.
+# Plain `source`, not `micromamba run` — the runtime stage only copies
+# /opt/micromamba (the env data), not the micromamba binary itself (that
+# lives at /usr/local/bin/micromamba in the builder-tier images, never
+# copied here). Sourcing the env's own generated setup.bash directly is
+# the same runtime-stage pattern every other image in this repo already
+# uses (none of them need the micromamba binary at runtime).
+RUN bash -c "source ${ROS_ENV_SETUP} && \
+    pip install --no-cache-dir /ws/api_server-*.whl" && \
     rm /ws/api_server-*.whl
 
 ENV RMF_API_SERVER_CONFIG=/ws/sqlite_local_config.py
@@ -61,4 +92,4 @@ RUN mkdir -p /ws/run/cache && chgrp -R 0 /ws && chmod -R g+rwX /ws
 USER 1001
 WORKDIR /ws
 
-ENTRYPOINT ["bash", "-c", "source ${ROS_ENV_SETUP} && mkdir -p run/cache && python3 -m api_server"]
+ENTRYPOINT ["bash", "-c", "source ${ROS_ENV_SETUP} && source ${RMF_WS}/install/setup.bash && mkdir -p run/cache && exec rmf_api_server"]
