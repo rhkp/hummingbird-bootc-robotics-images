@@ -1,12 +1,11 @@
-# launch-fleet-coordinator.sh + fleet-coordinator.py confirmed identical
-# between the image-baked copy and office/helm/files/ — no overlay needed.
+# The tools image owns launch-fleet-coordinator.sh and fleet-coordinator.py.
 [Unit]
 Description=OpenRMF fleet coordinator (centralized task assignment)
 After=rmf-simulation.service
 Requires=rmf-simulation.service
 
 [Container]
-Image=REGISTRY_PLACEHOLDER/hbr-rmf-demos:latest
+Image=REGISTRY_PLACEHOLDER/hbr-rmf-tools:latest
 ContainerName=rmf-fleet-coordinator
 Network=host
 Pull=never

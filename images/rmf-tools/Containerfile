@@ -1,0 +1,34 @@
+# hbr-rmf-tools: lightweight runtime for fleet monitoring, dispatch, and
+# coordination. It does not contain Gazebo, RViz, Nav2, or SLAM.
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-rmf-msgs:${BASE_TAG} AS builder
+
+FROM quay.io/hummingbird-community/bootc-os:latest
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV PATH=${MAMBA_ROOT_PREFIX}/envs/ros_env/bin:${PATH}
+ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+ENV RMF_WS=/opt/rmf/rmf_core_ws
+ENV ROS_LOG_DIR=/opt/rmf/.ros/log
+ENV HOME=/opt/rmf
+
+COPY --from=builder /opt/micromamba /opt/micromamba
+COPY --from=builder ${RMF_WS}/install ${RMF_WS}/install
+COPY images/rmf-tools/ros-env.sh /opt/rmf/scripts/ros-env.sh
+COPY common/scripts/dispatch-rmf-patrol-wrapper.sh /opt/rmf/scripts/dispatch-rmf-patrol-wrapper.sh
+COPY common/scripts/dispatch-rmf-patrol.py /opt/rmf/scripts/dispatch-rmf-patrol.py
+COPY common/scripts/fleet-coordinator.py /opt/rmf/scripts/fleet-coordinator.py
+COPY common/scripts/fleet-monitor.py /opt/rmf/scripts/fleet-monitor.py
+COPY common/scripts/launch-fleet-coordinator.sh /opt/rmf/scripts/launch-fleet-coordinator.sh
+COPY common/scripts/run-fleet-monitor.sh /opt/rmf/scripts/run-fleet-monitor.sh
+COPY common/scripts/wait-for-service.sh /opt/rmf/scripts/wait-for-service.sh
+COPY common/scripts/wait-for-topic.sh /opt/rmf/scripts/wait-for-topic.sh
+
+RUN chmod +x /opt/rmf/scripts/*.sh && \
+    mkdir -p /opt/rmf/.ros/log && \
+    chown -R 1001:0 /opt/rmf && chmod -R g+rwX /opt/rmf
+
+USER 1001
+WORKDIR /opt/rmf

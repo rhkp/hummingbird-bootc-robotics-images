@@ -28,6 +28,8 @@ BASE_IMAGES=(
 # README.md's dependency graph for readability.
 LEAF_IMAGES=(
   images/rmf-demos
+  images/rmf-robot
+  images/rmf-tools
   images/rmf-web-zenoh
   images/zenoh-router
   images/novnc

@@ -2,8 +2,8 @@
 
 <launch>
   <!-- Office world-only launch for robot-as-pod architecture.
-       This runs everything from office.launch.xml EXCEPT the fleet adapter,
-       which runs in separate robot pods instead. -->
+       This runs the world and core RMF services. The world runtime wrapper
+       starts the single fleet adapter after these services are ready. -->
 
   <arg name="use_sim_time" default="true"/>
   <arg name="failover_mode" default="false"/>
@@ -94,6 +94,7 @@
   <!-- Odometry is published by ground_truth_odom.py (launched from sim pod script) -->
   <!-- using Gazebo world poses instead of DiffDrive's broken wheel-joint integration -->
 
-  <!-- NOTE: fleet adapter is NOT included here - it runs in separate robot pods -->
+  <!-- NOTE: the fleet adapter is started by the world runtime wrapper after
+       this world-only launch has initialized. Robot pods run Nav2/SLAM only. -->
 
 </launch>

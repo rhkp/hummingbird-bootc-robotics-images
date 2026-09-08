@@ -6,7 +6,8 @@
 # The host itself stays minimal: no ROS, no RoboStack, no dnf ROS packages
 # at all. The actual RMF workload runs as separate containers bound in via
 # Quadlet (systemd generator, part of Podman) — those bound images are
-# hbr-rmf-demos / hbr-zenoh-router / hbr-novnc, built elsewhere in this repo.
+# hbr-rmf-demos / hbr-rmf-robot / hbr-rmf-tools / hbr-zenoh-router /
+# hbr-novnc, built elsewhere in this repo.
 #
 # Build (x86_64 only, from repo root like every other image — see build/build.sh):
 #   build/build.sh images/bootc-vm-host
@@ -44,16 +45,11 @@ RUN install -d /usr/lib/bootc/bound-images.d && \
       ln -sf "/usr/share/containers/systemd/${unit}.container" "/usr/lib/bootc/bound-images.d/${unit}.container"; \
     done
 
-# Script overlay: office/helm/files/ (Helm ConfigMap-mounted, always wins
-# over what's baked into the app image) has diverged from common/scripts/
-# baked into hbr-rmf-demos. Bake the real (Helm) versions in here and
-# Volume-mount them over the stale/missing paths in the Quadlet units — the
-# same override Helm achieves via ConfigMap, just via bootc host + Quadlet.
+# The GPU/VNC world wrapper is deployment-specific and is overlaid at runtime.
+# Generic robot, monitor, dispatch, and coordinator entrypoints are baked into
+# their dedicated runtime images and are not duplicated here.
 COPY images/bootc-vm-host/scripts-overlay/ /opt/rmf-overlay/
-# Defensive, not just fixed at the source: `cp` from a git checkout
-# preserves non-executable file permissions — Helm's ConfigMap mount papers
-# over this with its own defaultMode: 0755, but a plain bind mount
-# (Volume=...:ro) uses the host file's actual mode directly.
+# Defensive: a plain bind mount uses the host file's actual mode directly.
 RUN chmod +x /opt/rmf-overlay/*.sh
 
 # The `admin` user (config.toml) has a key but no password — sudo would

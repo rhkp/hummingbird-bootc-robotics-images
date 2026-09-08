@@ -8,7 +8,10 @@ INTERVAL="${WAIT_INTERVAL:-5}"
 
 echo "[wait] Waiting for topic ${TOPIC} (timeout ${TIMEOUT}s)..."
 elapsed=0
-until ros2 topic list 2>/dev/null | grep -Fxq "${TOPIC}"; do
+# Do not use grep -q here: with pipefail enabled, grep exits as soon as it
+# finds a match and ros2 can receive SIGPIPE, making an available topic look
+# like a failed check.  Let grep consume the complete ROS graph output.
+until ros2 topic list 2>/dev/null | grep -Fx "${TOPIC}" >/dev/null; do
   if (( elapsed >= TIMEOUT )); then
     echo "[wait] Timed out waiting for ${TOPIC}" >&2
     exit 1

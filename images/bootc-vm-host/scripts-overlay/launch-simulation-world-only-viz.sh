@@ -128,8 +128,8 @@ python3 /opt/rmf/scripts/ground_truth_odom.py --ros-args -p use_sim_time:=true \
 GT_ODOM_PID=$!
 
 # RMF traffic schedule: central database for trajectory conflict detection
-# and multi-robot negotiation. Fleet adapters in robot pods register
-# trajectories here; conflicts trigger automatic rerouting/holding.
+# and multi-robot negotiation. The world-owned fleet adapter registers all
+# robots here; conflicts trigger automatic rerouting/holding.
 #
 # Started this close to the local Zenoh daemon's own startup, its rmw_zenoh_cpp
 # session can fail its one-time graph registration (a race with the daemon's

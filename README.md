@@ -19,11 +19,13 @@ Container images for OpenRMF demos built on Project Hummingbird's `bootc-os` bas
         │        │
         │        ├─▶ hbr-rmf-core   (builder-tier: colcon-build for RMF core packages)
         │        │        │
-        │        │        └─▶ images/rmf-demos     (deployed: Gazebo/Nav2/RViz, rmf_demos)
+        │        │        └─▶ images/rmf-demos     (deployed: Gazebo/RViz, RMF world + fleet adapter)
         │        │
+        │        ├─▶ images/rmf-tools       (deployed: fleet monitor/dispatch/coordinator)
         │        └─▶ images/rmf-web-zenoh    (deployed: pnpm/Node, rmf-web's api_server)
         │
-        └─▶ images/zenoh-router   (deployed: zenoh-router)
+        ├─▶ images/rmf-robot       (deployed: Nav2/SLAM/TF/Zenoh runtime)
+        └─▶ images/zenoh-router    (deployed: zenoh-router)
 
 images/novnc            bootc-os (no ROS dependency)
 images/bootc-vm-host    bootc-os host OS (NVIDIA/akmod, firewalld, TLS cert, Quadlet units)
@@ -49,6 +51,8 @@ build/build-all.sh [--push]
 | rmf-msgs | `<registry>/hbr-rmf-msgs` | No |
 | rmf-core | `<registry>/hbr-rmf-core` | No |
 | rmf-demos | `<registry>/hbr-rmf-demos` | Yes |
+| rmf-robot | `<registry>/hbr-rmf-robot` | Yes |
+| rmf-tools | `<registry>/hbr-rmf-tools` | Yes |
 | zenoh-router | `<registry>/hbr-zenoh-router` | Yes |
 | novnc | `<registry>/hbr-novnc` | Yes |
 | rmf-web-zenoh | `<registry>/hbr-rmf-web-zenoh` | Yes |
@@ -70,6 +74,7 @@ build/build-all.sh [--push]
 ## Open Follow-ups
 
 - **hotel/airport parity**: `images/rmf-demos` is office-scope only.
+- **robot runtime**: `hbr-rmf-robot` is the default Nav2/SLAM runtime; custom robot images can be selected by the deployment repository.
 - **`ghcr.io/open-rmf/rmf-web/demo-dashboard`**: companion image.
 - **`bootc-os:latest` reproducibility**: every image floats on `:latest`.
 - **`ament_cmake_catch2`**: pulled into `hbr-rmf-core` but not used.

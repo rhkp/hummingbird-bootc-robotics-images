@@ -17,7 +17,8 @@ key = "REPLACE_WITH_YOUR_SSH_PUBLIC_KEY"
 # workload images installed alongside the host OS — confirmed by a real
 # build failure ("no space left on device") on the old repo's bootc-vm
 # lineage unpacking a ~7GB app image. hbr-rmf-demos alone is ~10.5GB, plus
-# hbr-zenoh-router and hbr-novnc — size generously rather than tune this
+# hbr-rmf-robot, hbr-rmf-tools, hbr-zenoh-router, and hbr-novnc — size
+# generously rather than tune this
 # exactly, EC2 gp3 storage is cheap.
 [[customizations.filesystem]]
 mountpoint = "/"

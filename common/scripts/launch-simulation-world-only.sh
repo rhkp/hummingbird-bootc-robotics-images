@@ -14,7 +14,8 @@ SERVER_URI="${RMF_SERVER_URI:-ws://localhost:8000/_internal}"
 echo "[simulation-world] Launching RMF ${RMF_LAUNCH_FILE} (world-only, headless)..."
 echo "[simulation-world] RMF server_uri=${SERVER_URI}"
 
-# Launch the world simulation only (no fleet adapters, no robots spawned)
+# Launch the world simulation without spawning simulated robots. Deployment
+# wrappers may start the world-owned fleet adapter after readiness checks.
 exec ros2 launch /opt/rmf/demos/common/launch/world_only.launch.xml \
   world_file:="${RMF_LAUNCH_FILE}" \
   use_sim_time:=true \

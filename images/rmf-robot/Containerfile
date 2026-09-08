@@ -1,0 +1,48 @@
+# hbr-rmf-robot: lightweight robot runtime for Nav2/SLAM/TF/Zenoh.
+# The world image owns Gazebo and the RMF fleet adapter; this image contains
+# only what an individual robot pod needs to connect to that world.
+
+ARG REGISTRY=quay.io/your-org
+ARG BASE_TAG=latest
+FROM ${REGISTRY}/hbr-ros-base:${BASE_TAG} AS builder
+
+ARG ROS_DISTRO=jazzy
+RUN micromamba install -y -n ros_env -c robostack-${ROS_DISTRO} -c conda-forge \
+      ros-${ROS_DISTRO}-navigation2 \
+      ros-${ROS_DISTRO}-nav2-bringup \
+      ros-${ROS_DISTRO}-slam-toolbox \
+      ros-${ROS_DISTRO}-robot-localization \
+      ros-${ROS_DISTRO}-pointcloud-to-laserscan \
+      ros-${ROS_DISTRO}-laser-filters \
+    && micromamba clean -a -y
+
+FROM quay.io/hummingbird-community/bootc-os:latest
+
+ARG FEDORA_FALLBACK_RELEASE=43
+COPY base/scripts/enable-fedora-repos.sh /tmp/enable-fedora-repos.sh
+RUN chmod +x /tmp/enable-fedora-repos.sh && \
+    /tmp/enable-fedora-repos.sh "${FEDORA_FALLBACK_RELEASE}" && \
+    dnf -y install libatomic && dnf clean all
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+ENV PATH=${MAMBA_ROOT_PREFIX}/envs/ros_env/bin:${PATH}
+ENV ROS_ENV_SETUP=${MAMBA_ROOT_PREFIX}/envs/ros_env/setup.bash
+ENV ROS_LOG_DIR=/opt/rmf/.ros/log
+ENV HOME=/opt/rmf
+
+COPY --from=builder /opt/micromamba /opt/micromamba
+COPY images/rmf-robot/ros-env.sh /opt/rmf/scripts/ros-env.sh
+COPY common/scripts/launch-robot.sh /opt/rmf/scripts/launch-robot.sh
+COPY common/scripts/nav2_tf_publisher.py /opt/rmf/scripts/nav2_tf_publisher.py
+COPY common/scripts/wait-for-world.sh /opt/rmf/scripts/wait-for-world.sh
+COPY common/launch/nav2_robot.launch.xml /opt/rmf/demos/common/launch/nav2_robot.launch.xml
+COPY common/config/nav2_params.yaml /opt/rmf/config/nav2_params.yaml
+COPY common/config/slam_toolbox_params.yaml /opt/rmf/config/slam_toolbox_params.yaml
+
+RUN chmod +x /opt/rmf/scripts/launch-robot.sh /opt/rmf/scripts/wait-for-world.sh && \
+    mkdir -p /opt/rmf/.ros/log && \
+    chown -R 1001:0 /opt/rmf && chmod -R g+rwX /opt/rmf
+
+USER 1001
+WORKDIR /opt/rmf
+ENTRYPOINT ["/opt/rmf/scripts/launch-robot.sh"]

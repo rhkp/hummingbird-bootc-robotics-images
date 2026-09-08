@@ -29,3 +29,4 @@ secrets/
 # Python
 **/__pycache__/
 *.pyc
+.aider*

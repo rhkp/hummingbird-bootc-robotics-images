@@ -1,6 +1,6 @@
 # hbr-rmf-demos: the main simulation/workspace image (office demo scope for
 # v1 — see README.md "Open follow-ups" for the hotel/airport fast-follow).
-# Builder stage extends hbr-rmf-core with Gazebo/Nav2/RViz + rmf_demos
+# Builder stage extends hbr-rmf-core with Gazebo/RViz + rmf_demos
 # itself; runtime stage starts fresh FROM bootc-os and copies in only what's
 # needed to run (rule #4).
 #
@@ -16,12 +16,7 @@ RUN micromamba install -y -n ros_env -c robostack-jazzy -c conda-forge \
       ros-jazzy-ros-gz-bridge \
       ros-jazzy-ros-gz-image \
       ros-jazzy-ros-gz-interfaces \
-      ros-jazzy-navigation2 \
-      ros-jazzy-nav2-bringup \
-      ros-jazzy-slam-toolbox \
-      ros-jazzy-robot-localization \
-      ros-jazzy-pointcloud-to-laserscan \
-      ros-jazzy-laser-filters \
+      ros-jazzy-nav2-msgs \
     && micromamba clean -a -y
 
 RUN bash -c "source ${ROS_ENV_SETUP} && gz sim --version"

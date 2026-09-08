@@ -4,7 +4,7 @@ After=rmf-simulation.service
 Requires=rmf-simulation.service
 
 [Container]
-Image=REGISTRY_PLACEHOLDER/hbr-rmf-demos:latest
+Image=REGISTRY_PLACEHOLDER/hbr-rmf-tools:latest
 ContainerName=rmf-fleet-monitor
 Network=host
 Pull=never

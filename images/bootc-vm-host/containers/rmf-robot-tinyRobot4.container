@@ -1,22 +1,17 @@
-# launch-robot.sh + wait-for-world.sh are overlaid from
-# office/helm/files/ (proven, actually-running versions) — the copies
-# baked into the app image are stale: they'd spawn a redundant per-robot
-# fleet adapter, conflicting with the single fleet adapter now centralized
-# in rmf-simulation.
+# The robot image owns the generic Nav2/SLAM/Zenoh runtime. The world image
+# owns the single RMF fleet adapter.
 [Unit]
 Description=OpenRMF robot-as-pod: tinyRobot4 (Nav2 + SLAM)
 After=rmf-simulation.service
 Requires=rmf-simulation.service
 
 [Container]
-Image=REGISTRY_PLACEHOLDER/hbr-rmf-demos:latest
+Image=REGISTRY_PLACEHOLDER/hbr-rmf-robot:latest
 ContainerName=rmf-robot-tinyRobot4
 Network=host
 Pull=never
 GlobalArgs=--storage-opt=additionalimagestore=/usr/lib/bootc/storage
 ShmSize=64m
-Volume=/opt/rmf-overlay/launch-robot.sh:/opt/rmf/scripts/launch-robot.sh:ro
-Volume=/opt/rmf-overlay/wait-for-world.sh:/opt/rmf/scripts/wait-for-world.sh:ro
 Exec=/opt/rmf/scripts/launch-robot.sh
 Environment=ROBOT_NAME=tinyRobot4
 Environment=ZENOH_ROUTER_ENDPOINT=tcp/localhost:7447

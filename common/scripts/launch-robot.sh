@@ -7,43 +7,8 @@ export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-offscreen}"
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 
 ROBOT_NAME="${ROBOT_NAME:?ROBOT_NAME env var must be set}"
-SERVER_URI="${RMF_SERVER_URI:-ws://localhost:8000/_internal}"
-
-echo "[${ROBOT_NAME}] Launching individual robot adapter pod..."
-echo "[${ROBOT_NAME}] RMF server_uri=${SERVER_URI}"
+echo "[${ROBOT_NAME}] Launching Nav2/SLAM robot pod..."
 echo "[${ROBOT_NAME}] Zenoh router: ${ZENOH_ROUTER_ENDPOINT}"
-
-# Create a per-robot fleet config by filtering the upstream config to only
-# include this robot. Each robot pod runs its own fleet adapter instance.
-ORIGINAL_CONFIG="$(ros2 pkg prefix rmf_demos)/share/rmf_demos/config/office/tinyRobot_config.yaml"
-NAV_GRAPH="$(ros2 pkg prefix rmf_demos_maps)/share/rmf_demos_maps/maps/office/nav_graphs/0.yaml"
-FILTERED_CONFIG="/tmp/${ROBOT_NAME}_config.yaml"
-
-echo "[${ROBOT_NAME}] Filtering fleet config to robot [${ROBOT_NAME}] with bidding enabled..."
-python3 -c "
-import yaml, sys
-with open('${ORIGINAL_CONFIG}') as f:
-    config = yaml.safe_load(f)
-robot_name = '${ROBOT_NAME}'
-robots = config.get('rmf_fleet', {}).get('robots', {})
-if robot_name not in robots:
-    print(f'ERROR: robot [{robot_name}] not found in config. Available: {list(robots.keys())}', file=sys.stderr)
-    sys.exit(1)
-# Filter to single robot
-config['rmf_fleet']['robots'] = {robot_name: robots[robot_name]}
-
-# Keep bidding enabled so robots participate in RMF task dispatch
-# and traffic schedule negotiation for collision avoidance
-config['rmf_fleet']['task_capabilities'] = {
-    'loop': True,
-    'delivery': True
-}
-
-with open('${FILTERED_CONFIG}', 'w') as f:
-    yaml.dump(config, f, default_flow_style=False)
-print(f'Wrote non-bidding config for [{robot_name}] to ${FILTERED_CONFIG}')
-print('Robot bidding enabled for RMF traffic schedule collision avoidance')
-"
 
 # Configure the local Zenoh session daemon (rmw_zenohd) to peer with the
 # central Zenoh router for cross-pod topic discovery.
@@ -54,12 +19,14 @@ ros2 run rmw_zenoh_cpp rmw_zenohd &
 ZENOHD_PID=$!
 
 cleanup() {
-  echo "[${ROBOT_NAME}] Cleaning up zenoh daemon..."
+  echo "[${ROBOT_NAME}] Cleaning up..."
+  kill ${TF_PUB_PID:-} 2>/dev/null || true
+  kill ${NAV2_PID:-} 2>/dev/null || true
   kill ${ZENOHD_PID} 2>/dev/null || true
 }
 trap cleanup EXIT
 
-sleep 8
+sleep "${ROBOT_STARTUP_DELAY:-20}"
 
 # Point ROS nodes to the LOCAL session daemon, not the central router directly.
 export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[\"tcp/localhost:7447\"];scouting/multicast/enabled=false"
@@ -67,7 +34,7 @@ export ZENOH_CONFIG_OVERRIDE="connect/endpoints=[\"tcp/localhost:7447\"];scoutin
 echo "[${ROBOT_NAME}] Waiting for world simulation topics..."
 /opt/rmf/scripts/wait-for-world.sh 300
 
-echo "[${ROBOT_NAME}] World ready -- launching nav2 + fleet adapter for robot [${ROBOT_NAME}]..."
+echo "[${ROBOT_NAME}] World ready -- launching Nav2/SLAM..."
 
 # Generate per-robot Nav2 params: replace ROBOT_PLACEHOLDER with actual robot name
 NAV2_PARAMS="/tmp/${ROBOT_NAME}_nav2_params.yaml"
@@ -80,8 +47,8 @@ echo "[${ROBOT_NAME}] Generated per-robot params: ${NAV2_PARAMS}, ${SLAM_PARAMS}
 echo "[${ROBOT_NAME}] Starting Nav2 TF publisher..."
 python3 /opt/rmf/scripts/nav2_tf_publisher.py --ros-args \
   -p robot_name:="${ROBOT_NAME}" \
-  -p fleet_name:="tinyRobot" \
   -p use_sim_time:=true \
+  --remap odom:=/"${ROBOT_NAME}"/odom \
   --remap /tf:=/"${ROBOT_NAME}"/tf \
   --remap /tf_static:=/"${ROBOT_NAME}"/tf_static &
 TF_PUB_PID=$!
@@ -97,44 +64,15 @@ ros2 launch /opt/rmf/demos/common/launch/nav2_robot.launch.xml \
   slam_params_file:="${SLAM_PARAMS}" &
 NAV2_PID=$!
 
-# Start RMF-Nav2 bridge
-echo "[${ROBOT_NAME}] Starting RMF-Nav2 bridge..."
-python3 /opt/rmf/scripts/rmf_nav2_bridge.py --ros-args \
-  -p robot_name:="${ROBOT_NAME}" \
-  -p fleet_name:="tinyRobot" &
-BRIDGE_PID=$!
+# Give Nav2 time to finish declaring its services before refreshing the local
+# Zenoh bridge. This is deliberately bounded and configurable for real robots.
+echo "[${ROBOT_NAME}] Waiting ${ZENOH_REFRESH_DELAY:-45}s for Nav2/SLAM to stabilize..."
+sleep "${ZENOH_REFRESH_DELAY:-45}"
+echo "[${ROBOT_NAME}] Restarting local Zenoh daemon..."
+kill "${ZENOHD_PID}" 2>/dev/null || true
+sleep 3
+ros2 run rmw_zenoh_cpp rmw_zenohd &
+ZENOHD_PID=$!
 
-# Update cleanup function
-cleanup() {
-  echo "[${ROBOT_NAME}] Cleaning up tf_publisher, nav2, bridge, and zenoh daemon..."
-  kill ${TF_PUB_PID} 2>/dev/null || true
-  kill ${NAV2_PID} 2>/dev/null || true
-  kill ${BRIDGE_PID} 2>/dev/null || true
-  kill ${ZENOHD_PID} 2>/dev/null || true
-}
-trap cleanup EXIT
-
-# Find upstream fleet_adapter launch file and invoke with per-robot config
-FLEET_ADAPTER_LAUNCH="$(ros2 pkg prefix rmf_demos_fleet_adapter)/share/rmf_demos_fleet_adapter/launch/fleet_adapter.launch.xml"
-
-# Launch fleet adapter with retry (RMF Schedule Node may not be ready yet)
-for attempt in 1 2 3 4 5; do
-  echo "[${ROBOT_NAME}] Fleet adapter attempt ${attempt}/5..."
-  ros2 launch "${FLEET_ADAPTER_LAUNCH}" \
-    use_sim_time:=true \
-    "nav_graph_file:=${NAV_GRAPH}" \
-    "config_file:=${FILTERED_CONFIG}" \
-    "server_uri:=${SERVER_URI}" &
-  FLEET_PID=$!
-  sleep 15
-  if kill -0 ${FLEET_PID} 2>/dev/null; then
-    echo "[${ROBOT_NAME}] Fleet adapter running (pid ${FLEET_PID})"
-    wait ${FLEET_PID}
-    break
-  fi
-  echo "[${ROBOT_NAME}] Fleet adapter exited, retrying in 10s..."
-  sleep 10
-done
-
-echo "[${ROBOT_NAME}] Fleet adapter exited after all attempts"
-wait
+echo "[${ROBOT_NAME}] Nav2/SLAM running. Fleet adapter is owned by the world pod."
+wait ${NAV2_PID}
